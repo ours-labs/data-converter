@@ -1,0 +1,65 @@
+import {createTranslator} from './i18n.mjs';
+import {canAdvance,periodValid} from './state.mjs';
+const $=id=>document.getElementById(id);
+let languageStorage;try{languageStorage=window.localStorage}catch{/* English remains the default. */}
+const i18n=createTranslator(document,languageStorage);
+const {setText}=i18n;
+$('language').value=i18n.language;
+$('language').onchange=()=>{i18n.change($('language').value);visibility();show();};
+const invoke=(name,args={})=>window.__TAURI__.core.invoke(name,args);
+let step=0,sshOK=false,dbOK=false,busy=false,running=false,catalog=[],hostExpected='',lastProfile={},started=0,timer=null,cancelRequested=false,displayedStep=-1;
+const notify=(text,error=false)=>{setText($('notice'),text);$('notice').classList.toggle('error',error)};
+const format=n=>`${(n/1e6).toFixed(2)} MB`;
+const selectedColumns=()=>[...document.querySelectorAll('#columns input:checked')].map(e=>e.value);
+function profile(){
+ const p={ssh_host:$('ssh_user').value?`${$('ssh_user').value}@${$('ssh_host').value}`:$('ssh_host').value,remote_python:$('remote_python').value,database_env:$('database_env').value,timezone:'Asia/Tokyo',timeout_ms:300000};
+ p.auth_mode=$('auth').value;
+ if($('ssh_port').value)p.ssh_port=Number($('ssh_port').value);
+ if($('auth').value==='key')p.identity_file=$('identity_file').value;
+ if($('auth').value!=='existing')p._ssh_secret=$('ssh_secret').value;
+ if(hostExpected)p._host_expected=hostExpected;
+ if($('db-mode').value==='env')p.env_file=$('env_file').value;
+ else p._database={host:$('dbhost').value,port:Number($('dbport').value),dbname:$('dbname').value,user:$('dbuser').value,password:$('dbpass').value};
+ if($('database_name').value)p.database_name=$('database_name').value;
+ p.schema=$('schema').value||lastProfile.schema||'public';p.table=$('table').value||lastProfile.table;
+ const columns=selectedColumns();if(columns.length)p.columns=columns;
+ if($('period').value==='range'){
+  p.time_column=$('time_column').value;
+  const type=catalog.find(r=>r[0]===p.schema&&r[1]===p.table&&r[2]===p.time_column)?.[3];
+  for(const key of ['start','end'])if($(key).value)p[key]=$(key).value+(type==='timestamp with time zone'?'+09:00':'');
+ }
+ return p;
+}
+function options(id,values,preferred){const sel=$(id);sel.replaceChildren();for(const value of values){const o=document.createElement('option');o.value=value;o.textContent=value;sel.append(o)}if(values.includes(preferred))sel.value=preferred}
+function show(){if(displayedStep!==step){displayedStep=step;requestAnimationFrame(()=>window.scrollTo(0,0))}document.querySelectorAll('[data-step]').forEach(e=>e.hidden=Number(e.dataset.step)!==step);document.querySelectorAll('#steps li').forEach((e,i)=>{e.classList.toggle('active',i===step);e.classList.toggle('done',i<step)});$('step-label').textContent=`STEP ${step+1} / 5`;$('back').disabled=step===0||busy||running;$('next').hidden=step===4;refreshButtons();if(step===3)summary()}
+function refreshButtons(){document.querySelectorAll('input,select,button').forEach(e=>e.disabled=busy||running);$('host-accept').disabled=false;$('host-reject').disabled=false;$('cancel').disabled=!running||cancelRequested;$('back').disabled=step===0||busy||running;const state={ssh:sshOK,db:dbOK,table:$('table').value,columns:selectedColumns().length,periodValid:$('period').value==='all'||Boolean($('time_column').value&&($('start').value||$('end').value)&&periodValid($('start').value,$('end').value)),output:$('output').value};$('next').disabled=busy||running||!canAdvance(step,state);$('test-db').disabled=busy||!sshOK;$('test-ssh').disabled=busy;$('execute').disabled=busy||running}
+async function task(fn){if(busy||running)return;busy=true;refreshButtons();try{await fn()}catch(e){notify(String(e),true)}finally{busy=false;show()}}
+async function inspect(action){let result=await invoke('inspect',{profile:profile(),action});if(result.host_confirmation){$('host-prompt').textContent=result.host_confirmation;$('host-dialog').showModal();const accepted=await new Promise(resolve=>{ $('host-accept').onclick=()=>{ $('host-dialog').close();resolve(true)};$('host-reject').onclick=()=>{ $('host-dialog').close();resolve(false)};$('host-dialog').oncancel=()=>resolve(false)});if(!accepted)throw 'ホスト鍵の確認を中止しました。';hostExpected=result.host_confirmation;result=await invoke('inspect',{profile:profile(),action});if(result.host_confirmation)throw 'ホスト鍵が一致しません。接続を中止しました。'}return result}
+function invalidate(){sshOK=false;dbOK=false;hostExpected='';catalog=[];for(const id of ['database_name','schema','table'])$(id).replaceChildren();$('columns').replaceChildren();$('preview-table').replaceChildren();setText($('ssh-status'),'未確認');setText($('db-status'),'未確認');$('ssh-status').classList.remove('ok');$('db-status').classList.remove('ok');refreshButtons()}
+function tableChanged(){const p=profile();const rows=catalog.filter(r=>r[0]===p.schema&&r[1]===p.table);$('columns').replaceChildren();for(const row of rows){const label=document.createElement('label');const box=document.createElement('input');box.type='checkbox';box.value=row[2];box.checked=!lastProfile.columns||lastProfile.columns.includes(row[2]);box.onchange=()=>{clearEstimate();refreshButtons()};const text=document.createElement('span');text.textContent=row[2];const small=document.createElement('small');small.textContent=row[3];label.append(box,text,small);$('columns').append(label)}options('time_column',rows.filter(r=>r[3].includes('timestamp')||r[3]==='date').map(r=>r[2]),lastProfile.time_column);$('preview-table').replaceChildren();clearEstimate();show()}
+function schemaChanged(){options('table',[...new Set(catalog.filter(r=>r[0]===$('schema').value).map(r=>r[1]))],lastProfile.table);tableChanged()}
+async function listTables(){catalog=[];for(const id of ['schema','table','time_column'])$(id).replaceChildren();$('columns').replaceChildren();$('preview-table').replaceChildren();catalog=await inspect('list');options('schema',[...new Set(catalog.map(r=>r[0]))],lastProfile.schema);schemaChanged()}
+function clearEstimate(){setText($('estimate-result'),'条件変更後は、必要に応じて再度見積もってください。')}
+function summary(){const p=profile();$('summary').replaceChildren();for(const [label,value]of [['対象',`${p.database_name||i18n.t('接続先DB')} / ${p.schema} / ${p.table}`],['列',(p.columns||[]).join(', ')],['期間',$('period').value==='all'?'全期間':`${p.start||i18n.t('指定なし')} 以上 ～ ${p.end||i18n.t('指定なし')} 未満`],['形式','UTF-8 BOM・ヘッダーあり・日本時間'],['保存先',$('output').value]]){const dt=document.createElement('dt'),dd=document.createElement('dd');setText(dt,label);if(label==='期間'||label==='形式')setText(dd,value);else dd.textContent=value;$('summary').append(dt,dd)}}
+function fill(p){lastProfile=p;invalidate();for(const id of ['ssh_host','remote_python','env_file','database_env','identity_file','ssh_port'])if(p[id]!=null)$(id).value=p[id];$('ssh_user').value='';$('auth').value=p.auth_mode||(p.identity_file?'key':p._ssh_secret?'password':'existing');$('ssh_secret').value=p._ssh_secret||'';$('db-mode').value=p._database?'direct':'env';if(p._database){for(const [id,key]of [['dbhost','host'],['dbport','port'],['dbname','dbname'],['dbuser','user'],['dbpass','password']])$(id).value=p._database[key]||''}$('output').value=p.output_path||'';$('period').value=p.start||p.end?'range':'all';for(const key of ['start','end'])$(key).value=(p[key]||'').slice(0,16);$('save-secrets').checked=Boolean(p.saved_secrets);visibility();step=0;show()}
+function visibility(){$('key-field').hidden=$('auth').value!=='key';$('secret-field').hidden=$('auth').value==='existing';setText($('secret-label'),$('auth').value==='key'?'秘密鍵のパスフレーズ（任意）':'SSHパスワード');$('env-fields').hidden=$('db-mode').value!=='env';$('direct-fields').hidden=$('db-mode').value!=='direct';$('period-fields').hidden=$('period').value!=='range'}
+async function saved(){const data=await invoke('profiles');options('saved',['',...Object.keys(data)]);setText($('saved').options[0],'新しい設定')}
+$('test-ssh').onclick=()=>task(async()=>{await inspect('ssh');sshOK=true;setText($('ssh-status'),'接続・出力環境を確認済み');$('ssh-status').classList.add('ok');notify('サーバーへの接続と出力環境を確認しました。次にDB接続を確認してください。')});
+$('test-db').onclick=()=>task(async()=>{const names=await inspect('databases');options('database_name',names.names,lastProfile.database_name||names.current);await listTables();dbOK=true;setText($('db-status'),'接続済み');$('db-status').classList.add('ok');notify('DB接続を確認しました。出力対象を選択してください。')});
+$('database_name').onchange=()=>task(listTables);$('schema').onchange=schemaChanged;$('table').onchange=tableChanged;$('refresh').onclick=()=>task(listTables);
+$('preview').onclick=()=>task(async()=>{const result=await inspect('preview');const table=document.createElement('table');const head=document.createElement('tr');for(const col of result.columns){const th=document.createElement('th');th.textContent=col;head.append(th)}table.append(head);for(const row of result.rows){const tr=document.createElement('tr');for(const value of row){const td=document.createElement('td');td.textContent=value===null?'NULL':typeof value==='object'?JSON.stringify(value):String(value);tr.append(td)}table.append(tr)}$('preview-table').replaceChildren(table);notify(`${result.rows.length}行を表示しました。プレビューは各値1024文字まで。本出力には制限を適用しません。`)});
+for(const id of ['all-columns','no-columns'])$(id).onclick=()=>{document.querySelectorAll('#columns input').forEach(e=>e.checked=id==='all-columns');clearEstimate();refreshButtons()};
+for(const id of ['ssh_host','ssh_user','ssh_port','auth','identity_file','ssh_secret','remote_python','env_file','database_env','db-mode','dbhost','dbport','dbname','dbuser','dbpass'])$(id).addEventListener('input',()=>{invalidate();visibility()});
+for(const id of ['period','start','end','time_column'])$(id).addEventListener('input',()=>{visibility();clearEstimate();refreshButtons()});$('output').oninput=()=>{clearEstimate();refreshButtons();summary()};
+$('back').onclick=()=>{step--;show()};$('next').onclick=()=>{step++;show()};
+$('pick-key').onclick=()=>task(async()=>{const path=await invoke('choose',{kind:'key'});if(path){$('identity_file').value=path;invalidate()}});
+$('pick-output').onclick=()=>task(async()=>{const path=await invoke('choose',{kind:'output'});if(path)$('output').value=path});
+$('import').onclick=()=>task(async()=>{const path=await invoke('choose',{kind:'profile'});if(path){fill(await invoke('import_profile',{path}));notify('設定を読み込みました。接続を確認してください。')}});
+$('load').onclick=()=>task(async()=>{if(!$('saved').value)return;const name=$('saved').value;fill(await invoke('load_profile',{name}));$('profile-name').value=name;notify('登録済み設定を読み込みました。接続を確認してください。')});
+$('remove').onclick=()=>task(async()=>{const name=$('saved').value;if(name&&confirm(i18n.t(`設定「${name}」を削除しますか？`))){await invoke('delete_profile',{name});await saved();notify('設定を削除しました。')}});
+$('save').onclick=()=>task(async()=>{const p=profile();p.output_path=$('output').value;await invoke('save_profile',{name:$('profile-name').value,profile:p,saveSecrets:$('save-secrets').checked});await saved();notify('設定を登録しました。')});
+$('estimate').onclick=()=>task(async()=>{const p=await inspect('estimate');let text=`${p.rows.toLocaleString()}行・CSV推定 ${format(p.estimated_bytes)}（最大1,000行から推定）`;if($('output').value){const d=await invoke('destination',{output:$('output').value});text+=` / 保存先の空き ${format(d.free_bytes)}`;if(d.free_bytes<p.estimated_bytes)text+=' / 空き容量不足の可能性があります。'}setText($('estimate-result'),text)});
+$('execute').onclick=()=>task(async()=>{const output=$('output').value;if(!output)throw '保存先を指定してください。';const dest=await invoke('destination',{output});const overwrite=dest.exists&&confirm(i18n.t('同名CSVがあります。正常終了後に置き換えますか？'));if(dest.exists&&!overwrite)return;await invoke('begin_export',{profile:profile(),output,overwrite});running=true;cancelRequested=false;started=Date.now();$('cancel').disabled=false;$('open-output').hidden=true;setText($('result'),'');setText($('run-status'),'接続・件数確認中');notify('出力を開始しました。');timer=setInterval(poll,350)});
+async function poll(){try{const s=await invoke('status');$('received').textContent=format(s.received_bytes);setText($('elapsed'),`${((Date.now()-started)/1000).toFixed(1)} 秒`);if(s.running){if(s.received_bytes&&!cancelRequested)setText($('run-status'),'受信・保存・検証中');return}clearInterval(timer);running=false;$('cancel').disabled=true;const c=s.completion;if(c?.status==='complete'){const r=c.result;setText($('run-status'),'完了');setText($('result'),`${r.rows.toLocaleString()}行 / ${format(r.bytes)} / ${r.total_seconds.toFixed(2)}秒\n保存先：${r.output}`);$('open-output').hidden=false;notify('CSVの保存と検証が完了しました。')}else{setText($('run-status'),'未完了');setText($('result'),c?.error||'処理結果を取得できませんでした。');notify('出力は完了していません。設定とエラーを確認して再試行してください。',true)}show()}catch(e){notify(String(e),true)}}
+$('cancel').onclick=async()=>{cancelRequested=true;await invoke('cancel');$('cancel').disabled=true;setText($('run-status'),'中止処理中')};$('open-output').onclick=()=>task(()=>invoke('open_output'));
+visibility();show();saved().catch(e=>notify(`アプリ内で開いてください。${e}`,true));

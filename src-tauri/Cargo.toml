@@ -1,0 +1,23 @@
+[package]
+name = "pgcsv-desktop"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde_json = "1"
+pgcsv = { path = ".." }
+tempfile = "3"
+fs2 = "0.4"
+keyring = { version = "3", features = ["windows-native"] }
+
+[profile.release]
+lto = "thin"

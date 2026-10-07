@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-pg-csv-exporter"
+version = "0.1.0"
+description = "SSH経由のPostgreSQL CSV出力処理基盤"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+pgcsv = "pgcsv.exporter:main"
+
+[tool.setuptools]
+packages = ["pgcsv"]
+
+[tool.setuptools.package-data]
+pgcsv = ["remote.py"]

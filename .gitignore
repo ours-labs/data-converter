@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+local/
+exports/
+*.csv
+*.part
+*.pem
+*.key
+.env*
+dist/
+target/
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+*.egg-info/
