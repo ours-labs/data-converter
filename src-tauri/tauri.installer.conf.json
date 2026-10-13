@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "../local/public-build/release/odc.exe": "odc.exe",
+      "../local/public-build/release/pgcsv.exe": "pgcsv.exe",
+      "../LICENSE": "LICENSE",
+      "../local/installer-notices/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+      "../local/installer-notices/RUST-STANDARD-LIBRARY-NOTICES.html": "RUST-STANDARD-LIBRARY-NOTICES.html"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

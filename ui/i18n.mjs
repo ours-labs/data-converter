@@ -2,6 +2,36 @@ export const STORAGE_KEY='pgcsv.language';
 export function readLanguage(storage){try{return storage.getItem(STORAGE_KEY)==='ja'?'ja':'en'}catch{return 'en'}}
 export function saveLanguage(storage,language){try{storage.setItem(STORAGE_KEY,language)}catch{/* Selection still works when storage is unavailable. */}}
 export const messages={
+ '出力データと分割見込み':'Export data and split estimate','サイズは分割前の概算です。ヘッダーの反復分は含みません。DBの増減により、出力時の件数・分割数は変わる場合があります。':'Size is approximate before splitting and excludes repeated headers. Database changes may affect the exported record and file counts.',
+ '選択したCSV':'Selected CSV','再集計':'Scan again','集計を中止':'Stop counting','集計時点の情報です。分割時にファイルを再読込みします。':'Information is a snapshot. The file is read again when splitting.',
+ 'ブラウザーを開けません。同梱の対処方法を確認してください。':'Unable to open a browser. See the bundled advice above.',
+ '詳細を表示':'Show details','GitHubの対処方法':'Help on GitHub',
+ '接続先のPythonは不要です。DB接続確認時にSSH転送を確認します。':'No remote Python is required. SSH forwarding is checked with the database connection.',
+ 'Python不要・DB転送は次に確認':'Python-free; database forwarding not yet checked',
+ 'SSH接続を確認しました。次にDB接続を確認してください。':'SSH authentication verified. Check the database connection next.',
+
+ 'SSHポートは1から65535の整数にしてください。':'Enter an SSH port between 1 and 65535.', '秘密鍵ファイルを指定してください。':'Select a private key file.',
+ '接続先・SSHコマンド':'Host or SSH command','入力を反映':'Apply input',
+ 'ssh ユーザー名@接続先 の順です。入力を反映してから接続してください。':'Use ssh username@host. Apply the input before connecting.',
+ '接続履歴':'Connection history','履歴を検索':'Search history','最近の接続':'Recent connections','履歴を反映':'Use connection','履歴を削除':'Delete entry','履歴をすべて削除':'Clear history','接続成功履歴を保存する':'Remember successful connections',
+ 'SSH設定を使用':'Use SSH configuration','SSH認証を確認済み':'SSH authentication verified','出力環境を確認済み':'Export environment verified','出力環境の確認に失敗しました。':'Export environment check failed.',
+ '履歴を保存できませんでした。接続確認は成功しています。':'History could not be saved. SSH authentication succeeded.',
+ '履歴を読み込めません。手入力するか、履歴をすべて削除してください。':'History is unavailable. Enter a connection manually or clear history.',
+ '接続履歴をすべて削除しますか？登録設定は削除しません。':'Clear all connection history? Saved configurations will be kept.',
+ 'SSH入力を確認してください。対応形式: ssh [-p port] [-i key] [-l user] [user@]host':'Check the SSH input. Supported: ssh [-p port] [-i key] [-l user] [user@]host',
+
+ '操作':'Operation', 'PostgreSQLからCSV出力':'Export PostgreSQL to CSV', '保存済みCSVを分割':'Split an existing CSV',
+ '元ファイルを保持し、新しいフォルダーに分割結果を保存します。':'Preserve the source file and save split files in a new folder.',
+ '入力CSV':'Input CSV', 'CSVを選択':'Choose CSV', '親フォルダー':'Parent folder', 'フォルダーを選択':'Choose folder',
+ '文字コード':'Encoding', '自動（UTF-8を確認）':'Automatic (validate UTF-8)', '区切り文字':'Delimiter', 'カンマ':'Comma', 'タブ':'Tab', 'セミコロン':'Semicolon',
+ '先頭行をヘッダーとして扱う':'Treat the first record as a header', 'ヘッダーを指定行数に含める':'Count the header in the row limit',
+ '1ファイルの指定行数':'Row limit per file', 'セル内の改行は数えず、CSVのデータ1件を1行と数えます。':'Count CSV records, not line breaks inside cells.',
+ 'UTF-8と確認できない場合は文字コードを選択してください。中止・失敗時のフォルダーにはINCOMPLETE.txtが残ります。':'Select an encoding if UTF-8 validation fails. Cancelled or failed folders retain INCOMPLETE.txt.',
+ '分割を開始':'Start splitting', '保存前に分割する':'Split while exporting',
+ '保存先に親フォルダーを指定します。全ファイルにヘッダーを付け、新規フォルダーに保存します。':'Choose a parent folder. Every file has a header and is saved in a new folder.',
+ '別のCSVを分割':'Split another CSV', '指定行数を確認してください。':'Check the row limit.',
+ 'データがないため分割ファイルを作成しませんでした。':'No data records; no split files were created.',
+
  'サーバーのデータを、':'Server data,', '手元のCSVへ。':'your local CSV.',
  '接続設定':'Connection', '出力対象':'Source', '出力範囲':'Scope', '保存設定':'Destination', '実行・結果':'Export & results',
  '1回につき1テーブル':'One table per export', 'UTF-8・ヘッダー付き':'UTF-8 with headers', '読取り専用で出力':'Read-only export',
@@ -47,6 +77,7 @@ export const messages={
  '保存先に書き込めません。':'Cannot write to the destination.', '完了したCSVがありません。':'No completed CSV is available.', '保存先がありません。':'Destination not found.', '実行中です。':'An export is running.'
 };
 export const patterns=[
+ ['{0}件 / {1}ファイル / {2}秒\n保存先：{3}','{0} records / {1} files / {2} s\nDestination: {3}'],
  ['{0}行・CSV推定 {1}（最大1,000行から推定） / 保存先の空き {2} / 空き容量不足の可能性があります。','{0} rows · estimated CSV {1} (sample: up to 1,000 rows) / free space {2} / There may not be enough free space.'],
  ['{0}行・CSV推定 {1}（最大1,000行から推定） / 保存先の空き {2}','{0} rows · estimated CSV {1} (sample: up to 1,000 rows) / free space {2}'],
  ['{0}行を表示しました。プレビューは各値1024文字まで。本出力には制限を適用しません。','Showing {0} rows. Preview values are limited to 1024 characters. Exports are not truncated.'],

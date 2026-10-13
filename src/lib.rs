@@ -1,9 +1,15 @@
-use base64::{Engine, engine::general_purpose::STANDARD};
+pub mod cli;
+mod native;
+pub mod settings;
+pub mod split;
+mod update;
+
 use serde_json::{Value, json};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{BufRead, BufReader, BufWriter, Read, Write},
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -11,7 +17,12 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
+};
+#[cfg(test)]
+use std::{
+    io::{BufRead, BufReader, BufWriter},
+    time::Instant,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -20,24 +31,16 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-fn ssh_command(profile: &Value) -> Result<Command> {
+pub(crate) fn ssh_base(profile: &Value) -> Result<Command> {
     let host = profile["ssh_host"].as_str().ok_or("ssh_host missing")?;
     if host.starts_with('-')
         || host.is_empty()
         || !host
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.@:-".contains(&b))
+            .all(|b| b.is_ascii_alphanumeric() || b"_.@:%-".contains(&b))
     {
         return Err("invalid ssh_host".into());
     }
-    let python = profile["remote_python"]
-        .as_str()
-        .ok_or("remote_python missing")?;
-    if !python.starts_with('/') || python.contains(['\n', '\r']) {
-        return Err("remote_python must be an absolute Linux path".into());
-    }
-    let encoded = STANDARD.encode(include_bytes!("../pgcsv/remote.py"));
-    let code = format!("import base64;exec(base64.b64decode('{encoded}'))");
     let mut command = Command::new("ssh");
     let interactive = profile.get("_askpass").is_some();
     command.args([
@@ -111,9 +114,15 @@ fn ssh_command(profile: &Value) -> Result<Command> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+
+    Ok(command)
+}
+
+fn ssh_command(profile: &Value) -> Result<Command> {
+    let mut command = ssh_base(profile)?;
     command
-        .arg(host)
-        .arg(format!("{} -c {}", quote(python), quote(&code)));
+        .arg(profile["ssh_host"].as_str().ok_or("ssh_host missing")?)
+        .arg("cat >/dev/null; printf '{\"connected\":true}\\n'");
     Ok(command)
 }
 
@@ -163,6 +172,9 @@ pub fn askpass() -> bool {
 }
 
 fn payload(profile: &Value) -> Value {
+    if profile["action"] == "connect" {
+        return json!({});
+    }
     let mut result = profile.clone();
     result.as_object_mut().unwrap().retain(|key, _| {
         !key.starts_with('_')
@@ -176,7 +188,11 @@ fn payload(profile: &Value) -> Value {
 
 pub fn query(profile: &Value) -> Result<Value> {
     validate(profile)?;
-    query_command(profile, ssh_command(profile)?)
+    if matches!(profile["action"].as_str(), Some("connect" | "ssh")) {
+        query_command(&json!({"action":"connect"}), ssh_command(profile)?)
+    } else {
+        native::query(profile)
+    }
 }
 
 fn bounded_output(
@@ -229,7 +245,13 @@ fn query_command(profile: &Value, mut command: Command) -> Result<Value> {
     if sent.is_err() {
         let _ = child.lock().map_err(|_| "process lock")?.kill();
     }
+    let started = std::time::Instant::now();
+    let mut timed_out = false;
     let status = loop {
+        if started.elapsed() > Duration::from_secs(60) {
+            timed_out = true;
+            let _ = child.lock().map_err(|_| "process lock")?.kill();
+        }
         if let Some(status) = child.lock().map_err(|_| "process lock")?.try_wait()? {
             break status;
         }
@@ -237,6 +259,9 @@ fn query_command(profile: &Value, mut command: Command) -> Result<Value> {
     };
     let stdout = output_reader.join().map_err(|_| "output reader failed")??;
     let stderr = error_reader.join().map_err(|_| "error reader failed")??;
+    if timed_out {
+        return Err("SSH query timed out".into());
+    }
     sent?;
     if !status.success() {
         // Only transport diagnostics and worker error types; worker never emits DSNs.
@@ -302,14 +327,7 @@ pub fn export_progress(
     received: Arc<AtomicU64>,
 ) -> Result<Value> {
     validate(profile)?;
-    export_transport(
-        profile,
-        output,
-        overwrite,
-        cancel,
-        ssh_command(profile)?,
-        received,
-    )
+    native::export(profile, output, overwrite, cancel, received)
 }
 
 #[cfg(test)]
@@ -330,6 +348,7 @@ fn export_with_command(
     )
 }
 
+#[cfg(test)]
 fn export_transport(
     profile: &Value,
     output: &Path,
@@ -338,17 +357,36 @@ fn export_transport(
     mut command: Command,
     received: Arc<AtomicU64>,
 ) -> Result<Value> {
-    if output.exists() && !overwrite {
+    let split_options = profile
+        .get("_split")
+        .or_else(|| profile.get("split_options"))
+        .map(split::Options::from_value)
+        .transpose()?;
+    let mut splitter = split_options
+        .map(|mut options| {
+            options.header = true;
+            options.delimiter = b',';
+            options.encoding = "utf8".into();
+            split::Splitter::new(output, profile["table"].as_str().unwrap_or("data"), options)
+        })
+        .transpose()?;
+    if splitter.is_none() && output.exists() && !overwrite {
         return Err("destination already exists".into());
     }
     let parent = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut temporary = tempfile::Builder::new()
-        .prefix("pgcsv-")
-        .suffix(".part")
-        .tempfile_in(parent)?;
+    let mut temporary = if splitter.is_none() {
+        Some(
+            tempfile::Builder::new()
+                .prefix("pgcsv-")
+                .suffix(".part")
+                .tempfile_in(parent)?,
+        )
+    } else {
+        None
+    };
     let started = Instant::now();
     let mut child = command
         .stdin(Stdio::piped())
@@ -395,7 +433,36 @@ fn export_transport(
     let transferred = (|| -> Result<(u64, String)> {
         input.write_all(&serde_json::to_vec(&payload)?)?;
         drop(input);
-        let mut writer = BufWriter::with_capacity(1024 * 1024, temporary.as_file_mut());
+        if let Some(splitter) = splitter.as_mut() {
+            struct Meter<'a> {
+                input: &'a mut dyn Read,
+                hash: Sha256,
+                size: u64,
+                received: &'a AtomicU64,
+            }
+            impl Read for Meter<'_> {
+                fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                    let n = self.input.read(b)?;
+                    self.hash.update(&b[..n]);
+                    self.size += n as u64;
+                    self.received.store(self.size, Ordering::Relaxed);
+                    Ok(n)
+                }
+            }
+            let mut meter = Meter {
+                input: &mut stdout,
+                hash: Sha256::new(),
+                size: 0,
+                received: &received,
+            };
+            splitter.consume(
+                std::io::Cursor::new(vec![0xef, 0xbb, 0xbf]).chain(&mut meter),
+                &cancel,
+            )?;
+            return Ok((meter.size, format!("{:x}", meter.hash.finalize())));
+        }
+        let mut writer =
+            BufWriter::with_capacity(1024 * 1024, temporary.as_mut().unwrap().as_file_mut());
         writer.write_all(&[0xef, 0xbb, 0xbf])?;
         let mut buffer = vec![0; 1024 * 1024];
         let mut size = 0;
@@ -425,43 +492,92 @@ fn export_transport(
     stopped.store(true, Ordering::Relaxed);
     watcher.join().map_err(|_| "cancel watcher failed")?;
     let (events, errors) = receiver.join().map_err(|_| "metadata reader failed")?;
-    let (size, digest) = transferred?;
-    if cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
-    }
-    if !status.success() {
-        return Err(format!("remote export failed: {events:?}; {errors:?}").into());
-    }
-    let starts = events
-        .iter()
-        .filter(|e| e["event"] == "start")
-        .collect::<Vec<_>>();
-    let completes = events
-        .iter()
-        .filter(|e| e["event"] == "complete")
-        .collect::<Vec<_>>();
-    if starts.len() != 1 || completes.len() != 1 || events.iter().any(|e| e["event"] == "error") {
-        return Err("missing remote completion".into());
-    }
-    let metadata = completes[0];
-    if Some(size) != metadata["bytes"].as_u64() || metadata["sha256"] != digest {
-        return Err("stream integrity mismatch".into());
-    }
-    temporary.as_file().sync_all()?;
-    let stream_seconds = started.elapsed().as_secs_f64();
-    let rows = check_csv(temporary.path(), metadata, starts[0], &cancel)?;
-    if overwrite {
-        temporary.persist(output)?;
-    } else {
-        temporary.persist_noclobber(output)?;
-    }
-    Ok(
-        json!({"rows":rows,"bytes":size+3,"sha256_without_bom":digest,"snapshot":starts[0]["snapshot"],"remote_stream_seconds":metadata["stream_seconds"],"transfer_and_save_seconds":stream_seconds,"total_seconds":started.elapsed().as_secs_f64(),"output":output}),
-    )
+    let result = (|| -> Result<Value> {
+        let (size, digest) = transferred?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        if !status.success() {
+            return Err(format!("remote export failed: {events:?}; {errors:?}").into());
+        }
+        let starts = events
+            .iter()
+            .filter(|e| e["event"] == "start")
+            .collect::<Vec<_>>();
+        let completes = events
+            .iter()
+            .filter(|e| e["event"] == "complete")
+            .collect::<Vec<_>>();
+        if starts.len() != 1 || completes.len() != 1 || events.iter().any(|e| e["event"] == "error")
+        {
+            return Err("missing remote completion".into());
+        }
+        let metadata = completes[0];
+        if Some(size) != metadata["bytes"].as_u64() || metadata["sha256"] != digest {
+            return Err("stream integrity mismatch".into());
+        }
+        if let Some(splitter) = splitter.as_ref() {
+            let header = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(splitter.header.as_slice())
+                .records()
+                .next()
+                .transpose()?;
+            let columns = header
+                .map(|r| r.iter().map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if json!(columns) != starts[0]["columns"]
+                || Some(splitter.rows) != metadata["rows"].as_u64()
+            {
+                return Err("split header or row count mismatch".into());
+            }
+            let mut result = splitter.complete(&cancel)?;
+            result["input_bytes"] = json!(size);
+            result["sha256_without_bom"] = json!(digest);
+            result["total_seconds"] = json!(started.elapsed().as_secs_f64());
+            result["snapshot"] = starts[0]["snapshot"].clone();
+            return Ok(result);
+        }
+        let temporary = temporary.take().unwrap();
+        temporary.as_file().sync_all()?;
+        let stream_seconds = started.elapsed().as_secs_f64();
+        let rows = check_csv(temporary.path(), metadata, starts[0], &cancel)?;
+        if overwrite {
+            temporary.persist(output)?;
+        } else {
+            temporary.persist_noclobber(output)?;
+        }
+        Ok(
+            json!({"rows":rows,"bytes":size+3,"sha256_without_bom":digest,"snapshot":starts[0]["snapshot"],"remote_stream_seconds":metadata["stream_seconds"],"transfer_and_save_seconds":stream_seconds,"total_seconds":started.elapsed().as_secs_f64(),"output":output}),
+        )
+    })();
+    result.map_err(|e| match &splitter {
+        Some(s) => s.incomplete_error(e).into(),
+        None => e,
+    })
 }
 
 pub fn run_cli() -> Result<()> {
+    let _runtime = settings::runtime_lock(false)?;
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("split") {
+        if args.len() != 4 {
+            return Err("usage: pgcsv split INPUT.csv PARENT_FOLDER OPTIONS.json".into());
+        }
+        let options = serde_json::from_slice(&fs::read(&args[3])?)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        ctrlc::set_handler(move || flag.store(true, Ordering::Relaxed))?;
+        let result = split::split_file(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            split::Options::from_value(&options)?,
+            &cancel,
+            &AtomicU64::new(0),
+        )?;
+        println!("{result}");
+        return Ok(());
+    }
     if args.len() < 2 {
         return Err("usage: pgcsv PROFILE.json OUTPUT.csv [--overwrite]".into());
     }
@@ -486,6 +602,16 @@ pub fn run_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ssh_probe_is_fixed_and_does_not_send_database_credentials() {
+        let p = json!({"ssh_host":"pi@example-host","action":"connect","remote_python":"not-a-path","_database":{"password":"never-send"}});
+        let command = ssh_command(&p).unwrap();
+        assert_eq!(
+            command.get_args().last().unwrap(),
+            "cat >/dev/null; printf '{\"connected\":true}\\n'"
+        );
+        assert_eq!(payload(&p), json!({}));
+    }
     #[test]
     fn query_output_limits_terminate_children() {
         for (stream, size) in [("stdout", 4 * 1024 * 1024 + 1), ("stderr", 65537)] {
@@ -569,6 +695,58 @@ mod tests {
         let mut command = Command::new("python");
         command.args(["-c", &code]);
         command
+    }
+    #[test]
+    fn streamed_split_validates_remote_integrity_before_completion() {
+        let folder = tempfile::tempdir().unwrap();
+        let profile = json!({"table":"sensor","_split":{"limit":2,"header":true,"count_header":true,"delimiter":",","encoding":"utf8"}});
+        let data = "name,value\n日本語,1\n空,2\n";
+        let result = export_with_command(
+            &profile,
+            folder.path(),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            fixture(data, 2, false, 0.0, None),
+        )
+        .unwrap();
+        assert_eq!(result["files"], 2);
+        assert_eq!(result["rows"], 2);
+        let out = Path::new(result["output"].as_str().unwrap());
+        assert!(!out.join("INCOMPLETE.txt").exists());
+        assert_eq!(
+            fs::read(out.join("sensor_002.csv")).unwrap(),
+            [
+                vec![0xef, 0xbb, 0xbf],
+                "name,value\n空,2\n".as_bytes().to_vec()
+            ]
+            .concat()
+        );
+        for (rows, fail, hash) in [(2, false, Some("wrong")), (3, false, None), (2, true, None)] {
+            let err = export_with_command(
+                &profile,
+                folder.path(),
+                false,
+                Arc::new(AtomicBool::new(false)),
+                fixture(data, rows, fail, 0.0, hash),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("Incomplete folder:"), "{err}");
+        }
+        let incomplete = fs::read_dir(folder.path())
+            .unwrap()
+            .filter(|d| d.as_ref().unwrap().path().join("INCOMPLETE.txt").exists())
+            .count();
+        assert_eq!(incomplete, 3);
+        let empty = export_with_command(
+            &profile,
+            folder.path(),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            fixture("name,value\n", 0, false, 0.0, None),
+        )
+        .unwrap();
+        assert_eq!(empty["files"], 0);
     }
     #[test]
     fn transport_and_atomic_failure() {

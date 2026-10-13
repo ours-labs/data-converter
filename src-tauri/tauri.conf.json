@@ -1,13 +1,27 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PG CSV Exporter",
-  "version": "0.2.0",
+  "productName": "OURS Data Converter",
+  "version": "0.4.0",
   "identifier": "jp.kazuki.pgcsv",
-  "build": {"frontendDist": "../ui"},
+  "build": {
+    "frontendDist": "../ui"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{"title": "PG CSV Exporter", "width": 1080, "height": 800, "minWidth": 820, "minHeight": 620}],
-    "security": {"csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"}
+    "windows": [
+      {
+        "title": "OURS Data Converter",
+        "width": 1080,
+        "height": 800,
+        "minWidth": 820,
+        "minHeight": 620
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
   },
-  "bundle": {"active": false}
+  "bundle": {
+    "active": false
+  }
 }

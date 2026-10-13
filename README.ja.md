@@ -1,23 +1,23 @@
-# PG CSV Exporter
+# OURS Data Converter
 
 [English](README.md)
 
 SSH経由でPostgreSQLの1テーブルをPC上のCSVへ保存するツールです。
 Windows画面から接続設定、テーブルのプレビュー、列・期間・保存先の選択、
 進捗確認、中止を行えます。PostgreSQLのCOPYで生成したCSVを逐次保存し、
-ハッシュ・ヘッダー・件数を確認して完成ファイルにします。
+受信ハッシュを計算し、ヘッダー・件数を確認して完成ファイルにします。
 
 ## プレビュー版の状態
 
-署名なしのWindows x64ポータブル版です。既存SSH設定を使うCSV出力を
-1台のWindows PCで確認しています。別PC、パスワード認証、暗号化秘密鍵、
-Windows資格情報マネージャーとの連携は一連の動作を未検証です。
-インストーラーと自動更新はありません。初期表示は英語で、日本語に切り替えられます。
+0.4.0は署名なしのWindows x64インストーラーとポータブル版を提供します。
+既存SSH設定によるCSV出力と、DB資格情報を保存するCLI登録・再接続を1台のWindows PCで確認しています。
+別PC、SSHパスワード認証、暗号化秘密鍵は未検証です。
+初期表示は英語で、日本語に切り替えられます。更新は利用者が開始し、バックグラウンド自動更新は行いません。
 
 ## 必要な環境
 
 - Windows 10/11 x64、Microsoft Edge WebView2 Runtime、OpenSSHクライアント。
-- SSH接続可能なLinuxサーバーと、サーバー上のPython 3.11以上・psycopg 3。
+- SSH転送を許可し、PostgreSQLへTCP接続できるLinuxサーバー。Python・psycopg・psqlは不要です。
 - 対象テーブルのSELECT権限を持つPostgreSQL接続情報。
 - CSV保存に十分な空き容量。表示する容量は標本行による概算です。
 
@@ -28,11 +28,12 @@ Windows資格情報マネージャーとの連携は一連の動作を未検証�
 
 ## Windows配布版の利用
 
-1. このリポジトリのReleasesからWindows x64のZIPと`.sha256`を取得します。
-2. `Get-FileHash .\PG-CSV-Exporter-v0.2.0-preview.2-windows-x64.zip -Algorithm SHA256`
-   の結果をチェックサムと照合し、ZIP全体を書込み可能なフォルダーへ展開します。
-3. `pgcsv-desktop.exe`と`pgcsv.exe`を同じ場所に置き、`pgcsv-desktop.exe`を起動します。
-4. SSH接続、サーバーのPythonパス、DB設定を入力し、両方の接続を確認します。
+1. ReleasesからWindows x64のインストーラーまたはZIPと`.sha256`を取得します。
+2. `Get-FileHash <取得したファイル> -Algorithm SHA256`でチェックサムと照合します。
+3. インストーラーは現在のユーザーに導入します。新しい端末を開くと`odc`を利用できます。
+   ZIPの場合は全ファイルを同じ場所へ展開して`pgcsv-desktop.exe`を起動します。
+   CLIは同じフォルダーの`odc.exe`を使います。ZIP展開だけではPATHは登録されません。
+4. SSH接続とDB設定を入力し、両方の接続を確認します。
 5. 1テーブルを選び、プレビュー後に列と必要なら期間を指定します。
 6. CSV保存先を選択し、出力します。
 
@@ -67,3 +68,48 @@ DesktopのビルドはWindowsが対象です。配布前に`scripts/build-public
 配布ZIPには第三者ライセンス、該当ソースの取得先、Rust標準ライブラリのnoticeを含みます。
 
 プレビューは各値を文字列で表示し、1024文字を超える部分を省略記号で示します。選択列は最大256列で、応答が4 MiBを超える場合は拒否します。この制限でCSV本出力を切り詰めることはありません。
+
+## CSVを分割する
+
+「保存済みCSVを分割」から、SSHなしで入力CSV・親フォルダー・文字コード・区切り文字を指定できます。PostgreSQL出力では保存設定の「保存前に分割する」を選びます。新規フォルダー内に連番CSVを保存します。
+
+全ファイルにヘッダーを付けます。初期値は100,000行でヘッダーを含めるため、データ99,999件です。ヘッダーを数えない設定や、ローカル入力のヘッダーなしも選べます。引用符内の改行は件数に含めません。
+
+元CSVのbyte・引用・順序・区切り・BOMを維持します。初期はUTF-8を検証し、必要ならCP932を明示選択します。カンマ・タブ・セミコロンに対応。不正引用・列幅不一致・文字コード不正・64MiB超のレコードは読み飛ばさず停止します。データなしでは出力を作りません。中止・失敗時はINCOMPLETE.txtが残り、検証と同期に成功した場合だけ削除します。元CSVは変更せず、分割の途中再開はできません。
+
+## 接続方式とエラー案内
+
+Rust driverからOpenSSHの標準入出力転送でDBへ接続します。旧remote_python設定は無視します。単一TCP接続のみ対応し、Unix socket/multi-host/hostaddrは非対応です。SSH先loopback以外へのDB接続は証明書/hostnameを検証するTLSが必要です。設定file方式はheadで64 KiBまでをPCメモリへ読み取り、環境変数方式はprintenvを使います。秘密を含む値を実行しません。
+
+[エラー一覧](docs/ERRORS.ja.md)にはコード別の対処方法があります。アプリの標準対処と詳細はofflineでも確認できます。GitHubの説明がまだ利用できない場合は同梱案内を利用してください。受信hashはPCで計算します。1行が非常に大きい場合、通信libraryの受信bufferも大きくなります。
+
+ソースには開発比較用のPython CLIも残しています。この別経路は接続先のPython・psycopgが必要ですが、Windows配布版とRust CLIでは使用しません。LinuxでCLIをビルドする場合はOpenSSL開発ヘッダーとpkg-configが必要です。今回のエラー配置はDOM自動検証済みで、Windows実画面での見え方は確認待ちです。
+
+## コマンド操作
+
+`odc`で簡易一覧、`odc -h`で詳細ヘルプを表示します。
+
+```text
+odc -p
+odc -d user@example-host
+odc -a user@example-host
+odc -p my-profile --estimate
+odc -p my-profile --split-rows 100000 -o C:\Exports
+odc split input.csv --split-rows 100000
+odc update --check
+odc update
+odc update -y
+```
+
+`-p`は登録名を1行ずつ表示します。`-d`はSSH接続とアクセス可能なPostgreSQL候補を確認します。
+探索未完了を不存在とは判定しません。`-a`は既存DBへの接続を対話登録します。テーブルと列はGUIで設定してください。
+`-o`省略時はGUI設定の保存先より現在のフォルダーを優先します。
+分割時は新しいサブフォルダーを作り、各ファイルへヘッダーを繰り返します。
+既定ではヘッダーも行数に含み、`--exclude-header-count`でデータ件数だけを数えます。
+
+`update --yes`と`update -y`は同じ動作です。アプリ内の確認を省略しますが、整合性検証とOSの確認は省略しません。
+更新前に他の起動中インスタンスを閉じてください。公開stable版のWindowsインストーラーだけが更新対象です。
+更新情報を取得できない場合はエラーとなり、最新版とは判定しません。公開版への更新完走はまだ未検証です。
+
+エラーはコード・要約・[対処方法](docs/ERRORS.ja.md)へのURLで案内します。
+ブラウザーは自動起動せず、生のエラー詳細や資格情報を表示しません。
