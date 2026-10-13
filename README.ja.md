@@ -83,7 +83,7 @@ Rust driverからOpenSSHの標準入出力転送でDBへ接続します。旧rem
 
 [エラー一覧](docs/ERRORS.ja.md)にはコード別の対処方法があります。アプリの標準対処と詳細はofflineでも確認できます。GitHubの説明がまだ利用できない場合は同梱案内を利用してください。受信hashはPCで計算します。1行が非常に大きい場合、通信libraryの受信bufferも大きくなります。
 
-ソースには開発比較用のPython CLIも残しています。この別経路は接続先のPython・psycopgが必要ですが、Windows配布版とRust CLIでは使用しません。LinuxでCLIをビルドする場合はOpenSSL開発ヘッダーとpkg-configが必要です。今回のエラー配置はDOM自動検証済みで、Windows実画面での見え方は確認待ちです。
+ソースには開発比較用のPython CLIも残しています。この別経路は接続先のPython・psycopgが必要ですが、Windows配布版とRust CLIでは使用しません。LinuxでCLIをビルドする場合はOpenSSL開発ヘッダーとpkg-configが必要です。エラー配置にはDOM自動テストがあります。また、1台のWindows PCで、接続・DB選択・CSV保存・エラー表示が正常に動作したとの利用者報告を受けています。別PCやすべての認証方式での動作を確認したものではありません。
 
 ## コマンド操作
 

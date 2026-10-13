@@ -117,8 +117,10 @@ See the [error reference](docs/ERRORS.md). Bundled advice and expandable details
 The source tree also retains a separate Python comparison CLI for development.
 That legacy entry point still requires remote Python and psycopg; it is not used
 by the Windows package or the Rust CLI. Linux CLI builds need OpenSSL development
-headers and pkg-config. The native error layout has automated DOM coverage;
-visual verification of this preview in the Windows desktop remains pending.
+headers and pkg-config. The native error layout has automated DOM coverage.
+A user reported successful connection, database selection, CSV saving and error
+display in the desktop interface on one Windows PC. This does not establish
+compatibility with other PCs or every authentication method.
 
 ## Command line
 
